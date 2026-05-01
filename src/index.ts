@@ -1,6 +1,5 @@
 import { Context, Schema, h, Logger } from 'koishi';
 import axios, { AxiosInstance } from 'axios';
-import crypto from 'crypto';
 import path from 'path';
 
 export const name = 'video-parser-all';
@@ -22,7 +21,6 @@ export const Config = Schema.intersect([
   Schema.object({
     showImageText: Schema.boolean().default(true).description('是否发送解析后的文字内容'),
     showVideoFile: Schema.boolean().default(true).description('是否发送视频文件（关闭则只发送视频链接）'),
-    sendLivePhotoVideos: Schema.boolean().default(true).description('发送实况图集时是否附带短视频'),
     maxDescLength: Schema.number().default(200).description('简介内容最大长度（字符），超出自动截断'),
   }).description('内容显示设置'),
 
@@ -173,7 +171,7 @@ async function resolveShortUrl(url: string): Promise<string> {
 }
 
 function formatDuration(seconds: number): string {
-  if (!seconds || seconds <= 0) return '00:00:00';
+  if (!seconds || seconds <= 0) return '';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
@@ -278,6 +276,7 @@ function parseApiResponse(raw: any, maxDescLen: number): ParsedData {
 }
 
 function generateFormattedText(p: ParsedData, format: string): string {
+  const imageCount = p.images.length || p.live_photo.length;
   const vars: Record<string, string> = {
     '标题': p.title,
     '作者': p.author,
@@ -289,7 +288,7 @@ function generateFormattedText(p: ParsedData, format: string): string {
     '播放数': String(p.play),
     '评论数': String(p.comment),
     '发布时间': p.publishTime ? formatPublishTime(p.publishTime) : '',
-    '图片数量': String(p.images.length || p.live_photo.length),
+    '图片数量': String(imageCount),
     '作者ID': p.uid,
     '视频链接': p.video,
     '封面': p.cover,
@@ -297,11 +296,31 @@ function generateFormattedText(p: ParsedData, format: string): string {
     '音乐标题': p.music.title || '',
   };
 
-  let result = format;
-  for (const [key, value] of Object.entries(vars)) {
-    result = result.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), value);
+  const lines = format.split('\n');
+  const resultLines: string[] = [];
+
+  for (const line of lines) {
+    const varMatches = line.match(/\$\{([^}]+)\}/g);
+    if (varMatches) {
+      let allEmpty = true;
+      for (const match of varMatches) {
+        const varName = match.replace(/\$\{|\}/g, '');
+        const val = vars[varName];
+        if (val !== undefined && val !== '') {
+          allEmpty = false;
+          break;
+        }
+      }
+      if (allEmpty) continue;
+    }
+    let newLine = line;
+    for (const [key, value] of Object.entries(vars)) {
+      newLine = newLine.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), value);
+    }
+    resultLines.push(newLine);
   }
-  return result.replace(/^\s*\n/gm, '').trim();
+
+  return resultLines.join('\n').trim();
 }
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -453,27 +472,14 @@ export function apply(ctx: Context, config: any) {
       }
 
       if (p.type === 'image' || p.type === 'live_photo') {
-        const mediaList: Array<{ type: 'image' | 'video'; url: string }> = [];
-        if (p.type === 'live_photo' && p.live_photo?.length) {
-          for (const lp of p.live_photo) {
-            if (lp.image) mediaList.push({ type: 'image', url: lp.image });
-            if (lp.video && config.sendLivePhotoVideos) mediaList.push({ type: 'video', url: lp.video });
-          }
-        } else if (p.images?.length) {
-          p.images.forEach(url => mediaList.push({ type: 'image', url }));
-        }
-
+        const imageUrls = p.images?.length ? p.images : [];
         if (enableForward) {
-          for (const m of mediaList) {
-            const msg = m.type === 'image' ? h.image(m.url) : h.video(m.url);
-            forwardMessages.push(buildForwardNode(session, msg, botName));
+          for (const url of imageUrls) {
+            forwardMessages.push(buildForwardNode(session, h.image(url), botName));
           }
         } else {
-          for (const m of mediaList) {
-            try {
-              await sendWithTimeout(session, m.type === 'image' ? h.image(m.url) : h.video(m.url));
-              await delay(200);
-            } catch {}
+          for (const url of imageUrls) {
+            try { await sendWithTimeout(session, h.image(url)); await delay(200); } catch {}
           }
         }
       }

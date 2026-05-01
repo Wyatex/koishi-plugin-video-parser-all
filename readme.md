@@ -3,19 +3,19 @@
 ## 项目介绍 (Project Introduction)
 
 ### 中文
-这是一个为 Koishi 机器人框架开发的**全平台视频/图集解析插件**，使用统一API接口，支持自动识别并解析抖音、快手、B站、小红书、微博、YouTube、TikTok、剪映、AcFun、知乎、虎牙等20+主流平台的短视频/图集/实况链接。核心特性：
+这是一个为 Koishi 机器人框架开发的**全平台视频/图集解析插件**，使用统一API接口，支持自动识别并解析抖音、快手、B站、小红书、微博、YouTube、TikTok、剪映、AcFun、知乎、虎牙等20+主流平台的短视频/图集链接。核心特性：
 - 🌐 统一API解析，覆盖20+热门平台，无需繁琐配置
 - 🤖 自动识别链接来源，即丢即用
-- 🎨 完全自定义的解析结果格式，支持多项变量替换
+- 🎨 完全自定义的解析结果格式，支持多项变量替换，变量无值自动隐藏行
 - 🐛 内置Debug调试模式，可详细记录所有操作与API交互日志
 - 📤 支持OneBot平台消息合并转发，优化多图文展示体验
 - 💬 所有提示文案均可自定义，适配多语言场景
 
 ### English
-This is a **multi-platform video/image parsing plugin** developed for the Koishi bot framework, using a unified API interface to automatically recognize and parse short video/image/live photo links from 20+ mainstream platforms such as Douyin, Kuaishou, Bilibili, Xiaohongshu, Weibo, YouTube, TikTok, Jianying, AcFun, Zhihu, Huya and more. Core features:
+This is a **multi-platform video/image parsing plugin** developed for the Koishi bot framework, using a unified API interface to automatically recognize and parse short video/image links from 20+ mainstream platforms such as Douyin, Kuaishou, Bilibili, Xiaohongshu, Weibo, YouTube, TikTok, Jianying, AcFun, Zhihu, Huya and more. Core features:
 - 🌐 Unified API parsing, covering 20+ popular platforms without complex configuration
 - 🤖 Auto-detection of link sources, just drop & go
-- 🎨 Fully customizable parsing result format with variable substitutions
+- 🎨 Fully customizable parsing result format with variable substitutions, empty variables hide the line automatically
 - 🐛 Built-in Debug mode, recording detailed operations and API interaction logs
 - 📤 Support OneBot message forwarding for better image/video display
 - 💬 All prompt texts are customizable for multilingual scenarios
@@ -43,14 +43,13 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 ### 统一消息格式
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `unifiedMessageFormat` | string | `\${标题}\n\${作者}\n\${简介}\n点赞：\${点赞数}\n收藏：\${收藏数}\n转发：\${转发数}\n播放：\${播放数}\n评论：\${评论数}` | 自定义解析结果的输出格式，支持变量替换 |
+| `unifiedMessageFormat` | string | `\${标题}\n\${作者}\n\${简介}\n点赞：\${点赞数}\n收藏：\${收藏数}\n转发：\${转发数}\n播放：\${播放数}\n评论：\${评论数}` | 自定义解析结果的输出格式，支持变量替换。某行所有变量为空时自动隐藏该行 |
 
 ### 内容显示设置
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `showImageText` | boolean | true | 是否发送解析后的文字内容 |
 | `showVideoFile` | boolean | true | 是否发送视频文件（关闭则只发送视频链接） |
-| `sendLivePhotoVideos` | boolean | true | 是否发送实况图片附带的短视频（仅 live_photo 类型） |
 | `maxDescLength` | number | 200 | 简介内容最大长度（字符），超出自动截断 |
 
 ### 网络与 API 设置
@@ -77,33 +76,33 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 |--------|------|--------|------|
 | `waitingTipText` | string | 正在解析视频，请稍候... | 解析等待提示文字 |
 | `unsupportedPlatformText` | string | 不支持该平台链接 | 不支持的平台提示 |
-| `invalidLinkText` | string | 无效的视频链接 | invalid link prompt (for parse command) |
+| `invalidLinkText` | string | 无效的视频链接 | 无效链接提示（parse 指令） |
 | `parseErrorPrefix` | string | ❌ 解析失败： | 解析失败消息前缀 |
 | `parseErrorItemFormat` | string | 【${url}】: ${msg} | 每条解析失败格式，可用 `${url}` `${msg}` |
 
 ## 支持的变量 (Supported Variables)
-在 `unifiedMessageFormat` 中可使用以下变量进行自定义格式化：
+在 `unifiedMessageFormat` 中可使用以下变量进行自定义格式化，某行所有变量均为空时该行不显示：
 
 | 变量名 | 说明 | 适用平台 |
 |--------|------|----------|
 | `${标题}` | 视频/图集标题 | 所有平台 |
 | `${作者}` | 作者/发布者名称 | 所有平台 |
 | `${简介}` | 内容简介/描述 | 所有平台 |
-| `${视频时长}` | 视频时长（时:分:秒） | 视频/实况 |
+| `${视频时长}` | 视频时长（时:分:秒） | 视频 |
 | `${点赞数}` | 点赞数量 | 所有平台 |
 | `${收藏数}` | 收藏数量 | 所有平台 |
 | `${转发数}` | 转发/分享数量 | 所有平台 |
 | `${播放数}` | 播放量 | 部分平台 |
 | `${评论数}` | 评论数量 | 所有平台 |
 | `${发布时间}` | 发布时间（格式化） | 所有平台 |
-| `${图片数量}` | 图集/实况图片数量 | 图集/实况 |
+| `${图片数量}` | 图集图片数量（live_photo 或 images 的数量） | 图集 |
 | `${作者ID}` | 作者唯一标识ID | 部分平台 |
-| `${视频链接}` | 视频直链地址 | 视频/实况 |
+| `${视频链接}` | 视频直链地址 | 视频 |
 | `${封面}` | 封面图片地址 | 所有平台 |
 | `${音乐作者}` | 背景音乐作者 | 部分平台 |
 | `${音乐标题}` | 背景音乐标题 | 部分平台 |
 
-> 注：部分变量可能因平台API返回数据不同而显示为空，请根据实际情况自定义格式。
+> 注：部分变量可能因平台API返回数据不同而显示为空，空值行会自动隐藏。
 
 ## 支持的平台 (Supported Platforms)
 | 平台名称 | 关键词识别 | 解析能力 |
