@@ -44,7 +44,7 @@ export const Config = Schema.intersect([
     unsupportedPlatformText: Schema.string().default('不支持该平台链接').description('不支持的平台提示'),
     invalidLinkText: Schema.string().default('无效的视频链接').description('无效链接提示（parse 指令）'),
     parseErrorPrefix: Schema.string().default('❌ 解析失败：').description('解析失败消息前缀'),
-    parseErrorItemFormat: Schema.string().default('【${url}】: ${msg}').description('每条解析失败格式，可用 ${url} ${msg}'),
+    parseErrorItemFormat: Schema.string().default('【${url}】: ${msg}').description('每条解析失败格式，可用变量：${url}（链接）、${msg}（错误信息）'),
   }).description('界面文字设置'),
 ]);
 

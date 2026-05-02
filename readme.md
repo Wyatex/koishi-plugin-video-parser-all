@@ -78,7 +78,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 | `unsupportedPlatformText` | string | 不支持该平台链接 | 不支持的平台提示 |
 | `invalidLinkText` | string | 无效的视频链接 | 无效链接提示（parse 指令） |
 | `parseErrorPrefix` | string | ❌ 解析失败： | 解析失败消息前缀 |
-| `parseErrorItemFormat` | string | 【${url}】: ${msg} | 每条解析失败格式，可用 `${url}` `${msg}` |
+| `parseErrorItemFormat` | string | 【${url}】: ${msg} | 每条解析失败的展示格式，可用 ${url}（链接）和 ${msg}（错误信息） |
 
 ## 支持的变量 (Supported Variables)
 在 `unifiedMessageFormat` 中可使用以下变量进行自定义格式化，某行所有变量均为空时该行不显示：
