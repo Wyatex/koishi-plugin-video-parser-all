@@ -8,7 +8,7 @@
 - 🤖 自动识别链接来源，即丢即用
 - 🎨 完全自定义的解析结果格式，支持多项变量替换，变量无值自动隐藏行
 - 🐛 内置Debug调试模式，可详细记录所有操作与API交互日志
-- 📤 支持OneBot平台消息合并转发
+- 📤 支持OneBot平台消息合并转发，优化多图文展示体验
 - 💬 所有提示文案均可自定义，适配多语言场景
 
 ### English
@@ -17,7 +17,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 - 🤖 Auto-detection of link sources, just drop & go
 - 🎨 Fully customizable parsing result format with variable substitutions, empty variables hide the line automatically
 - 🐛 Built-in Debug mode, recording detailed operations and API interaction logs
-- 📤 Supports message merging and forwarding on the OneBot platform
+- 📤 Support OneBot message forwarding for better image/video display
 - 💬 All prompt texts are customizable for multilingual scenarios
 
 ## 项目仓库 (Repository)
@@ -43,7 +43,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 ### 统一消息格式
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `unifiedMessageFormat` | string | `\${标题}\n\${作者}\n\${简介}\n点赞：\${点赞数}\n收藏：\${收藏数}\n转发：\${转发数}\n播放：\${播放数}\n评论：\${评论数}` | 自定义解析结果的输出格式，支持变量替换。某行所有变量为空时自动隐藏该行 |
+| `unifiedMessageFormat` | string | `标题：${标题}\n作者：${作者}\n简介：${简介}\n点赞：${点赞数}\n收藏：${收藏数}\n转发：${转发数}\n播放：${播放数}\n评论：${评论数}` | 自定义解析结果的输出格式，支持变量替换。某行所有变量为空时自动隐藏该行 |
 
 ### 内容显示设置
 | 配置项 | 类型 | 默认值 | 说明 |
