@@ -3,7 +3,7 @@
 ## 项目介绍 (Project Introduction)
 
 ### 中文
-这是一个为 Koishi 机器人框架开发的**全平台视频/图集解析插件**，使用统一API接口，支持自动识别并解析抖音、快手、B站、小红书、微博、YouTube、TikTok、剪映、AcFun、知乎、虎牙等20+主流平台的短视频/图集链接。核心特性：
+这是一个为 Koishi 机器人框架开发的**全平台视频/图集解析插件**，使用统一API接口，支持自动识别并解析抖音、快手、B站、小红书、微博、YouTube、TikTok、剪映、AcFun、知乎、虎牙等20+主流平台的短视频/图集/实况链接。核心特性：
 - 🌐 统一API解析，覆盖20+热门平台，无需繁琐配置
 - 🤖 自动识别链接来源，即丢即用
 - 🎨 完全自定义的解析结果格式，支持多项变量替换，变量无值自动隐藏行
@@ -13,7 +13,7 @@
 - 🔁 消息发送支持自动重试，与API重试配置联动，增强稳定性
 
 ### English
-This is a **multi-platform video/image parsing plugin** developed for the Koishi bot framework, using a unified API interface to automatically recognize and parse short video/image links from 20+ mainstream platforms such as Douyin, Kuaishou, Bilibili, Xiaohongshu, Weibo, YouTube, TikTok, Jianying, AcFun, Zhihu, Huya and more. Core features:
+This is a **multi-platform video/image parsing plugin** developed for the Koishi bot framework, using a unified API interface to automatically recognize and parse short video/image/live photo links from 20+ mainstream platforms such as Douyin, Kuaishou, Bilibili, Xiaohongshu, Weibo, YouTube, TikTok, Jianying, AcFun, Zhihu, Huya and more. Core features:
 - 🌐 Unified API parsing, covering 20+ popular platforms without complex configuration
 - 🤖 Auto-detection of link sources, just drop & go
 - 🎨 Fully customizable parsing result format with variable substitutions, empty variables hide the line automatically
@@ -45,7 +45,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 ### 统一消息格式
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `unifiedMessageFormat` | string | `标题：${标题}\n作者：${作者}\n简介：${简介}\n点赞：${点赞数}\n收藏：${收藏数}\n转发：${转发数}\n播放：${播放数}\n评论：${评论数}` | 自定义解析结果的输出格式，支持变量替换。某行所有变量为空时自动隐藏该行 |
+| `unifiedMessageFormat` | string | `标题：${标题}\n作者：${作者}\n简介：${简介}\n点赞：${点赞数}\n收藏：${收藏数}\n转发：${转发数}\n播放：${播放数}\n评论：${评论数}\n图片数量：${图片数量}` | 自定义解析结果的输出格式，支持变量替换。某行所有变量为空（或为"0"）时自动隐藏该行 |
 
 ### 内容显示设置
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -83,7 +83,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 | `parseErrorItemFormat` | string | 【${url}】: ${msg} | 每条解析失败的展示格式，可用 ${url}（链接）和 ${msg}（错误信息） |
 
 ## 支持的变量 (Supported Variables)
-在 `unifiedMessageFormat` 中可使用以下变量进行自定义格式化，某行所有变量均为空时该行不显示：
+在 `unifiedMessageFormat` 中可使用以下变量进行自定义格式化，某行所有变量均为空（或为"0"）时该行不显示：
 
 | 变量名 | 说明 | 适用平台 |
 |--------|------|----------|
@@ -97,11 +97,11 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 | `${播放数}` | 播放量 | 部分平台 |
 | `${评论数}` | 评论数量 | 所有平台 |
 | `${发布时间}` | 发布时间（格式化） | 所有平台 |
-| `${图片数量}` | 图集图片数量（live_photo 或 images 的数量） | 图集 |
+| `${图片数量}` | 图集/实况图片数量 | 图集/实况 |
 | `${作者ID}` | 作者唯一标识ID | 部分平台 |
 | `${封面}` | 封面图片地址 | 所有平台 |
 
-> 注：部分变量可能因平台API返回数据不同而显示为空，空值行会自动隐藏。
+> 注：部分变量可能因平台API返回数据不同而显示为空，某行所有变量为空（或为"0"）时该行会自动隐藏。
 
 ## 支持的平台 (Supported Platforms)
 | 平台名称 | 关键词识别 | 解析能力 |

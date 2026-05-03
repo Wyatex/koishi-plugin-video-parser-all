@@ -13,7 +13,7 @@ export const Config = Schema.intersect([
 
   Schema.object({
     unifiedMessageFormat: Schema.string().role('textarea').default(
-      `标题：\${标题}\n作者：\${作者}\n简介：\${简介}\n点赞：\${点赞数}\n收藏：\${收藏数}\n转发：\${转发数}\n播放：\${播放数}\n评论：\${评论数}`
+      `标题：\${标题}\n作者：\${作者}\n简介：\${简介}\n点赞：\${点赞数}\n收藏：\${收藏数}\n转发：\${转发数}\n播放：\${播放数}\n评论：\${评论数}\n图片数量：\${图片数量}`
     ).description('统一消息格式，可用变量：${标题} ${作者} ${简介} ${点赞数} ${收藏数} ${转发数} ${播放数} ${评论数} ${视频时长} ${发布时间} ${图片数量} ${作者ID} ${封面}'),
   }).description('消息格式设置'),
 
@@ -31,7 +31,7 @@ export const Config = Schema.intersect([
 
   Schema.object({
     ignoreSendError: Schema.boolean().default(true).description('忽略消息发送失败，避免插件崩溃'),
-    retryTimes: Schema.number().min(0).default(3).description('API 请求重试次数（同时用于消息发送重试）'),
+    retryTimes: Schema.number().min(0).default(3).description('API 请求及消息发送失败时的重试次数'),
     retryInterval: Schema.number().min(0).default(1000).description('重试间隔（毫秒，同时用于消息发送重试）'),
   }).description('错误与重试设置'),
 
@@ -44,7 +44,7 @@ export const Config = Schema.intersect([
     unsupportedPlatformText: Schema.string().default('不支持该平台链接').description('不支持的平台提示'),
     invalidLinkText: Schema.string().default('无效的视频链接').description('无效链接提示（parse 指令）'),
     parseErrorPrefix: Schema.string().default('❌ 解析失败：').description('解析失败消息前缀'),
-    parseErrorItemFormat: Schema.string().default('【${url}】: ${msg}').description('每条解析失败格式，可用 ${url} ${msg}'),
+    parseErrorItemFormat: Schema.string().default('【${url}】: ${msg}').description('每条解析失败格式，可用 ${url}（链接）和 ${msg}（错误信息）'),
   }).description('界面文字设置'),
 ]);
 
@@ -317,7 +317,7 @@ function generateFormattedText(p: ParsedData, format: string): string {
       for (const match of varMatches) {
         const varName = match.replace(/\$\{|\}/g, '');
         const val = vars[varName];
-        if (val !== undefined && val !== '') {
+        if (val !== undefined && val !== '' && val !== '0') {
           allEmpty = false;
           break;
         }
@@ -414,9 +414,6 @@ export function apply(ctx: Context, config: any) {
     return { success: true, data: { text, parsed: result.data } };
   }
 
-  /**
-   * 发送消息（支持超时与重试），重试次数与间隔与API重试配置绑定
-   */
   async function sendWithTimeout(session: any, content: any, customRetries?: number): Promise<any> {
     const maxRetries = customRetries ?? config.retryTimes ?? 3;
     const retryDelay = config.retryInterval || 1000;
@@ -424,10 +421,8 @@ export function apply(ctx: Context, config: any) {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         if (config.videoSendTimeout <= 0) {
-          // 无超时限制，直接发送
           return await session.send(content);
         } else {
-          // 设置超时竞争
           return await Promise.race([
             session.send(content),
             new Promise((_, reject) => setTimeout(() => reject(new Error('发送超时')), config.videoSendTimeout))
@@ -440,7 +435,6 @@ export function apply(ctx: Context, config: any) {
           debugLog('INFO', `等待 ${retryDelay}ms 后进行第 ${attempt + 2} 次重试`);
           await delay(retryDelay);
         } else {
-          // 最后一次失败，根据配置决定是否抛出
           if (!config.ignoreSendError) throw err;
           return null;
         }
@@ -484,12 +478,12 @@ export function apply(ctx: Context, config: any) {
         else { await sendWithTimeout(session, text); await delay(300); }
       }
 
-      if (p.cover && p.type !== 'live_photo') {
+      if (p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
         if (enableForward) forwardMessages.push(buildForwardNode(session, h.image(p.cover), botName));
         else { await sendWithTimeout(session, h.image(p.cover)).catch(() => {}); await delay(300); }
       }
 
-      if (p.video && config.showVideoFile && (p.type === 'video' || p.type === 'live')) {
+      if (p.video && config.showVideoFile && (p.type === 'video' || (p.type === 'live' && !p.live_photo?.length && !p.images?.length))) {
         const videoMsg = h.video(p.video);
         if (enableForward) {
           forwardMessages.push(buildForwardNode(session, videoMsg, botName));
@@ -499,8 +493,8 @@ export function apply(ctx: Context, config: any) {
         }
       }
 
-      if (p.type === 'image' || p.type === 'live_photo') {
-        const imageUrls = p.images?.length ? p.images : [];
+      if (p.type === 'image' || p.type === 'live_photo' || (p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+        const imageUrls = p.images?.length ? p.images : (p.live_photo?.map(lp => lp.image) ?? []);
         if (enableForward) {
           for (const url of imageUrls) {
             forwardMessages.push(buildForwardNode(session, h.image(url), botName));
@@ -515,16 +509,13 @@ export function apply(ctx: Context, config: any) {
     }
 
     if (enableForward && forwardMessages.length) {
-      // 合并转发发送时也使用重试机制，失败后降级逐条发送
       const forwardMsg = h('message', { forward: true }, forwardMessages.slice(0, 100));
-      try {
-        await sendWithTimeout(session, forwardMsg, config.retryTimes); // 使用相同的重试次数
-      } catch {
+      await sendWithTimeout(session, forwardMsg, config.retryTimes).catch(() => {
         debugLog('ERROR', '合并转发发送最终失败，降级为逐条发送');
-        for (const node of forwardMessages) {
+        forwardMessages.forEach(async (node) => {
           try { await sendWithTimeout(session, node.data.content); await delay(300); } catch {}
-        }
-      }
+        });
+      });
     }
   }
 
