@@ -28,6 +28,7 @@ export const Config = Schema.intersect([
     videoDownloadTimeout: Schema.number().default(120000).description('视频下载超时（毫秒）'),
     tempDir: Schema.string().default('./temp_videos').description('临时视频存储目录'),
     maxVideoSize: Schema.number().min(0).step(1).default(0).description('最大下载视频大小（MB），0 为不限制大小'),
+    forceDownloadVideo: Schema.boolean().default(true).description('强制下载视频后发送（解决B站、小红书等平台URL无法直接发送的问题）'),
   }).description('内容显示设置'),
 
   Schema.object({
@@ -43,7 +44,7 @@ export const Config = Schema.intersect([
   }).description('错误与重试设置'),
 
   Schema.object({
-    enableForward: Schema.boolean().default(false).description('启用合并转发（仅 OneBot 平台）'),
+    enableForward: Schema.boolean().default(false).description('启用合并转发（仅 OneBot 平台），视频会单独发送'),
   }).description('发送方式设置'),
 
   Schema.object({
@@ -448,6 +449,20 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function isSpecialPlatformVideo(url: string): boolean {
+  const specialHosts = [
+    'bilibili.com',
+    'akamaized.net',
+    'hdslb.com',
+    'xiaohongshu.com',
+    'xhslink.com',
+    'zhihu.com',
+    'weibo.com',
+    'sinaimg.cn'
+  ];
+  return specialHosts.some(host => url.includes(host));
+}
+
 export function apply(ctx: Context, config: any) {
   debugEnabled = config.debug || false;
   debugLog('INFO', '插件初始化开始');
@@ -564,27 +579,33 @@ export function apply(ctx: Context, config: any) {
   async function sendVideoFile(session: any, videoUrl: string): Promise<any> {
     if (!videoUrl) throw new Error('视频链接为空');
 
-    try {
-      debugLog('INFO', `尝试直接发送视频URL: ${videoUrl.substring(0, 100)}...`);
-      return await sendWithTimeout(session, h.video(videoUrl));
-    } catch (err) {
-      debugLog('ERROR', `直接发送URL失败，开始下载视频: ${getErrorMessage(err)}`);
-      
-      let tempFilePath: string | null = null;
+    const shouldForceDownload = config.forceDownloadVideo || isSpecialPlatformVideo(videoUrl);
+    
+    if (!shouldForceDownload) {
       try {
-        tempFilePath = await downloadVideoFile(
-          videoUrl, 
-          config.tempDir || './temp_videos', 
-          config.videoDownloadTimeout || 120000,
-          config.maxVideoSize || 0
-        );
-        const localFile = `file://${path.resolve(tempFilePath)}`;
-        debugLog('INFO', `视频下载完成，发送本地文件: ${localFile}`);
-        return await sendWithTimeout(session, h.video(localFile));
-      } finally {
-        if (tempFilePath) {
-          fs.unlink(tempFilePath).catch(e => debugLog('WARN', `删除临时文件失败: ${e}`));
-        }
+        debugLog('INFO', `尝试直接发送视频URL: ${videoUrl.substring(0, 100)}...`);
+        return await sendWithTimeout(session, h.video(videoUrl));
+      } catch (err) {
+        debugLog('ERROR', `直接发送URL失败，开始下载视频: ${getErrorMessage(err)}`);
+      }
+    } else {
+      debugLog('INFO', `检测到特殊平台视频，强制下载后发送: ${videoUrl.substring(0, 100)}...`);
+    }
+    
+    let tempFilePath: string | null = null;
+    try {
+      tempFilePath = await downloadVideoFile(
+        videoUrl, 
+        config.tempDir || './temp_videos', 
+        config.videoDownloadTimeout || 120000,
+        config.maxVideoSize || 0
+      );
+      const localFile = `file://${path.resolve(tempFilePath)}`;
+      debugLog('INFO', `视频下载完成，发送本地文件: ${localFile}`);
+      return await sendWithTimeout(session, h.video(localFile));
+    } finally {
+      if (tempFilePath) {
+        fs.unlink(tempFilePath).catch(e => debugLog('WARN', `删除临时文件失败: ${e}`));
       }
     }
   }
@@ -623,6 +644,7 @@ export function apply(ctx: Context, config: any) {
 
     const enableForward = config.enableForward && session.platform === 'onebot';
     const botName = config.botName || '视频解析机器人';
+    const videoItems: ParsedData[] = [];
 
     if (enableForward) {
       const forwardMessages: any[] = [];
@@ -642,6 +664,9 @@ export function apply(ctx: Context, config: any) {
             forwardMessages.push(buildForwardNode(session, h.image(imgUrl), botName));
           }
         }
+        if (p.video && config.showVideoFile && (p.type === 'video' || (p.type === 'live' && !p.live_photo?.length && !p.images?.length))) {
+          videoItems.push(p);
+        }
       }
 
       if (forwardMessages.length) {
@@ -657,17 +682,14 @@ export function apply(ctx: Context, config: any) {
         }
       }
 
-      for (const item of items) {
-        const p = item.parsed;
-        if (p.video && config.showVideoFile && (p.type === 'video' || (p.type === 'live' && !p.live_photo?.length && !p.images?.length))) {
-          try {
-            await sendVideoFile(session, p.video);
-          } catch (err) {
-            debugLog('ERROR', `视频发送失败（降级发送链接）: ${getErrorMessage(err)}`);
-            await sendWithTimeout(session, `视频链接：${p.video}`).catch(() => {});
-          }
-          await delay(500);
+      for (const p of videoItems) {
+        try {
+          await sendVideoFile(session, p.video);
+        } catch (err) {
+          debugLog('ERROR', `视频发送失败（降级发送链接）: ${getErrorMessage(err)}`);
+          await sendWithTimeout(session, `视频链接：${p.video}`).catch(() => {});
         }
+        await delay(500);
       }
     } else {
       for (const item of items) {
@@ -704,6 +726,11 @@ export function apply(ctx: Context, config: any) {
 
   ctx.on('message', async (session) => {
     if (!config.enable) return;
+
+    // 修复：使用正确的小写subtype属性名
+    if (session.subtype === 'file_upload') return;
+    if (session.elements?.some(elem => elem.type === 'file' || elem.type === 'folder')) return;
+
     const urls = extractAllUrlsFromMessage(session);
     if (!urls.length) return;
 

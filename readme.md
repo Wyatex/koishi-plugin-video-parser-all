@@ -12,7 +12,7 @@
 - 💬 所有提示文案均可自定义，适配多语言场景
 - 🔁 消息发送支持自动重试，与API重试配置联动，增强稳定性
 - 🚀 内置内存缓存，避免短时间内重复解析同一链接；并发控制，防止资源耗尽
-- ⚡ 优先直接发送视频URL，失败自动降级为本地文件发送，大幅提升性能
+- ⚡ 智能视频发送策略：普通平台优先直接发送URL，特殊平台自动降级为本地文件发送
 - 🛡️ 可选视频大小限制，防止超大文件占满服务器磁盘；自动清理所有临时文件
 
 ### English
@@ -25,7 +25,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 - 💬 All prompt texts are customizable for multilingual scenarios
 - 🔁 Message sending supports automatic retries, linked with API retry configuration for improved stability
 - 🚀 Built-in memory cache to avoid repeated parsing of the same URL; concurrency control to prevent resource exhaustion
-- ⚡ Priority to send video URL directly, automatically downgrade to local file sending on failure, greatly improving performance
+- ⚡ Smart video sending strategy: priority to send URL directly for common platforms, auto downgrade to local file for special platforms
 - 🛡️ Optional video size limit to prevent oversized files from filling up server disk; automatic cleanup of all temporary files
 
 ## 项目仓库 (Repository)
@@ -62,6 +62,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 | `videoDownloadTimeout` | number | 120000 | 视频下载超时（毫秒） |
 | `tempDir` | string | `./temp_videos` | 临时视频存储目录 |
 | `maxVideoSize` | number | 0 | 最大下载视频大小（MB），0 为不限制大小 |
+| `forceDownloadVideo` | boolean | true | 强制下载视频后发送（解决B站、小红书等平台URL无法直接发送的问题） |
 
 ### 网络与 API 设置
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -80,7 +81,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 ### 发送方式设置
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `enableForward` | boolean | false | 是否启用合并转发（仅 OneBot 平台） |
+| `enableForward` | boolean | false | 是否启用合并转发（仅 OneBot 平台），视频会单独发送 |
 
 ### 界面文字设置
 | 配置项 | 类型 | 默认值 | 说明 |
