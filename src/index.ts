@@ -1,5 +1,9 @@
 import { Context, Schema, h, Logger } from 'koishi';
 import axios, { AxiosInstance } from 'axios';
+import fs from 'fs/promises';
+import path from 'path';
+import { createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
 
 export const name = 'video-parser-all';
 
@@ -13,7 +17,7 @@ export const Config = Schema.intersect([
 
   Schema.object({
     unifiedMessageFormat: Schema.string().role('textarea').default(
-      `标题：\${标题}\n作者：\${作者}\n简介：\${简介}\n点赞：\${点赞数}\n收藏：\${收藏数}\n转发：\${转发数}\n播放：\${播放数}\n评论：\${评论数}\n图片数量：\${图片数量}`
+      `标题：${'标题'}\n作者：${'作者'}\n简介：${'简介'}\n点赞：${'点赞数'}\n收藏：${'收藏数'}\n转发：${'转发数'}\n播放：${'播放数'}\n评论：${'评论数'}\n图片数量：${'图片数量'}`
     ).description('统一消息格式，可用变量：${标题} ${作者} ${简介} ${点赞数} ${收藏数} ${转发数} ${播放数} ${评论数} ${视频时长} ${发布时间} ${图片数量} ${作者ID} ${封面}'),
   }).description('消息格式设置'),
 
@@ -21,6 +25,9 @@ export const Config = Schema.intersect([
     showImageText: Schema.boolean().default(true).description('是否发送解析后的文字内容'),
     showVideoFile: Schema.boolean().default(true).description('是否发送视频文件（关闭则只发送视频链接）'),
     maxDescLength: Schema.number().default(200).description('简介内容最大长度（字符），超出自动截断'),
+    videoDownloadTimeout: Schema.number().default(120000).description('视频下载超时（毫秒）'),
+    tempDir: Schema.string().default('./temp_videos').description('临时视频存储目录'),
+    maxVideoSize: Schema.number().min(0).step(1).default(0).description('最大下载视频大小（MB），0 为不限制大小'),
   }).description('内容显示设置'),
 
   Schema.object({
@@ -77,7 +84,6 @@ interface ParsedData {
 }
 
 const logger = new Logger(name);
-
 let debugEnabled = false;
 
 function debugLog(level: string, ...args: any[]) {
@@ -87,37 +93,58 @@ function debugLog(level: string, ...args: any[]) {
   logger.info(message);
 }
 
-const PLATFORM_KEYWORDS: Record<string, string[]> = {
-  bilibili: ['bilibili', 'b23', 'www.bilibili.com', 'm.bilibili.com', 'b23.tv', 't.bilibili.com', 'bilibili.com/video', 'bilibili.com/opus', 'bilibili.com/bangumi'],
-  kuaishou: ['kuaishou', 'v.kuaishou.com', 'www.kuaishou.com', 'kwimgs.com'],
-  weibo: ['weibo', 'weibo.com', 'video.weibo.com', 'm.weibo.cn', 'weibo.com/tv/show', 'weibo.com/feed'],
-  toutiao: ['toutiao', 'm.toutiao.com', 'toutiao.com', 'ixigua.com', 'toutiao.com/video'],
-  pipigx: ['pipigx', 'h5.pipigx.com', 'ippzone.com'],
-  pipixia: ['pipixia', 'pipix', 'h5.pipix.com', 'ppxsign.byteimg.com', 'pipix.com'],
-  douyin: ['douyin', 'v.douyin.com', 'douyinpic.com', 'douyinvod.com', 'douyin.com/video', 'douyin.com/note', 'www.douyin.com'],
-  zuiyou: ['zuiyou', 'xiaochuankeji.cn', 'izuiyou.com'],
-  xiaohongshu: ['xiaohongshu', 'xhslink.com', 'www.xiaohongshu.com'],
-  jianying: ['jianying', 'jimeng.jianying.com', 'lv.ulikecam.com'],
-  acfun: ['acfun', 'acfun.cn', 'www.acfun.cn'],
-  zhihu: ['zhihu', 'zhihu.com', 'www.zhihu.com'],
-  weishi: ['weishi', 'weishi.qq.com'],
-  huya: ['huya', 'huya.com', 'www.huya.com'],
-  youtube: ['youtube', 'youtube.com', 'youtu.be', 'www.youtube.com'],
-  tiktok: ['tiktok', 'tiktok.com', 'www.tiktok.com'],
-  xigua: ['xigua', 'ixigua.com'],
-  haokan: ['haokan', 'haokan.baidu.com'],
-  li: ['video.li'],
-  meipai: ['meipai', 'meipai.com'],
-  quanmin: ['quanmin', 'quanmin.tv'],
-  twitter: ['twitter', 'x.com'],
-  instagram: ['instagram', 'instagram.com'],
-  doubao: ['doubao', 'doubao.com'],
-  jimeng: ['jimeng', 'jimeng.ai'],
-};
+interface LinkMatch {
+  type: string;
+  url: string;
+  id: string;
+}
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+function linkTypeParser(content: string): LinkMatch[] {
+  content = content.replace(/\\\//g, '/');
+  const rules: { pattern: RegExp; type: string; buildUrl: (id: string) => string }[] = [
+    { pattern: /bilibili\.com\/video\/([ab]v[0-9a-zA-Z]+)/gi, type: 'bilibili', buildUrl: (id) => `https://www.bilibili.com/video/${id}` },
+    { pattern: /b23\.tv(?:\\)?\/([0-9a-zA-Z]+)/gi, type: 'bilibili', buildUrl: (id) => `https://b23.tv/${id}` },
+    { pattern: /bili(?:22|23|33)\.cn\/([0-9a-zA-Z]+)/gi, type: 'bilibili', buildUrl: (id) => `https://bili23.cn/${id}` },
+    { pattern: /bili2233\.cn\/([0-9a-zA-Z]+)/gi, type: 'bilibili', buildUrl: (id) => `https://bili2233.cn/${id}` },
+    { pattern: /douyin\.com\/video\/(\d+)/gi, type: 'douyin', buildUrl: (id) => `https://www.douyin.com/video/${id}` },
+    { pattern: /v\.douyin\.com\/([0-9a-zA-Z]+)/gi, type: 'douyin', buildUrl: (id) => `https://v.douyin.com/${id}` },
+    { pattern: /kuaishou\.com\/short-video\/([0-9a-zA-Z]+)/gi, type: 'kuaishou', buildUrl: (id) => `https://www.kuaishou.com/short-video/${id}` },
+    { pattern: /v\.kuaishou\.com\/([0-9a-zA-Z]+)/gi, type: 'kuaishou', buildUrl: (id) => `https://v.kuaishou.com/${id}` },
+    { pattern: /xiaohongshu\.com\/discovery\/item\/([0-9a-zA-Z]+)/gi, type: 'xiaohongshu', buildUrl: (id) => `https://www.xiaohongshu.com/discovery/item/${id}` },
+    { pattern: /xhslink\.com\/([0-9a-zA-Z]+)/gi, type: 'xiaohongshu', buildUrl: (id) => `https://xhslink.com/${id}` },
+    { pattern: /weibo\.com\/\d+\/([0-9a-zA-Z]+)/gi, type: 'weibo', buildUrl: (id) => `https://weibo.com/${id}` },
+    { pattern: /video\.weibo\.com\/show\?fid=([0-9a-zA-Z]+)/gi, type: 'weibo', buildUrl: (id) => `https://video.weibo.com/show?fid=${id}` },
+    { pattern: /ixigua\.com\/(\d+)/gi, type: 'xigua', buildUrl: (id) => `https://www.ixigua.com/${id}` },
+    { pattern: /youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/gi, type: 'youtube', buildUrl: (id) => `https://www.youtube.com/watch?v=${id}` },
+    { pattern: /youtu\.be\/([a-zA-Z0-9_-]+)/gi, type: 'youtube', buildUrl: (id) => `https://youtu.be/${id}` },
+    { pattern: /tiktok\.com\/@[\w.]+\/video\/(\d+)/gi, type: 'tiktok', buildUrl: (id) => `https://www.tiktok.com/@user/video/${id}` },
+    { pattern: /vm\.tiktok\.com\/([0-9a-zA-Z]+)/gi, type: 'tiktok', buildUrl: (id) => `https://vm.tiktok.com/${id}` },
+    { pattern: /acfun\.cn\/v\/(ac\d+)/gi, type: 'acfun', buildUrl: (id) => `https://www.acfun.cn/v/${id}` },
+    { pattern: /zhihu\.com\/video\/(\d+)/gi, type: 'zhihu', buildUrl: (id) => `https://www.zhihu.com/video/${id}` },
+    { pattern: /weishi\.qq\.com\/weishi\/feed\/([0-9a-zA-Z]+)/gi, type: 'weishi', buildUrl: (id) => `https://weishi.qq.com/weishi/feed/${id}` },
+    { pattern: /huya\.com\/video\/([0-9a-zA-Z]+)/gi, type: 'huya', buildUrl: (id) => `https://www.huya.com/video/${id}` },
+    { pattern: /haokan\.baidu\.com\/v\?vid=([0-9a-zA-Z]+)/gi, type: 'haokan', buildUrl: (id) => `https://haokan.baidu.com/v?vid=${id}` },
+    { pattern: /meipai\.com\/media\/(\d+)/gi, type: 'meipai', buildUrl: (id) => `https://www.meipai.com/media/${id}` },
+    { pattern: /twitter\.com\/\w+\/status\/(\d+)/gi, type: 'twitter', buildUrl: (id) => `https://twitter.com/i/status/${id}` },
+    { pattern: /x\.com\/\w+\/status\/(\d+)/gi, type: 'twitter', buildUrl: (id) => `https://x.com/i/status/${id}` },
+    { pattern: /instagram\.com\/p\/([0-9a-zA-Z_-]+)/gi, type: 'instagram', buildUrl: (id) => `https://www.instagram.com/p/${id}` },
+    { pattern: /doubao\.com\/video\/(\d+)/gi, type: 'doubao', buildUrl: (id) => `https://www.doubao.com/video/${id}` },
+  ];
+
+  const matches: LinkMatch[] = [];
+  const seen = new Set<string>();
+
+  for (const rule of rules) {
+    let match: RegExpExecArray | null;
+    while ((match = rule.pattern.exec(content)) !== null) {
+      const id = match[1];
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const url = rule.buildUrl(id);
+      matches.push({ type: rule.type, url, id });
+    }
+  }
+  return matches;
 }
 
 function extractUrl(content: string): string[] {
@@ -126,29 +153,57 @@ function extractUrl(content: string): string[] {
     try {
       const hostname = new URL(url).hostname.toLowerCase();
       if (hostname === 'multimedia.nt.qq.com.cn') return false;
-      return Object.values(PLATFORM_KEYWORDS).some(group =>
-        group.some(keyword =>
-          hostname.includes(keyword) || (!keyword.includes('.') && url.toLowerCase().includes(keyword))
-        )
-      );
+      return true;
     } catch {
-      const lower = url.toLowerCase();
-      return Object.values(PLATFORM_KEYWORDS).some(group => group.some(keyword => lower.includes(keyword)));
+      return false;
     }
   });
 }
 
-function getPlatformType(url: string): string | null {
-  try {
-    const hostname = new URL(url).hostname.toLowerCase();
-    if (hostname === 'multimedia.nt.qq.com.cn') return null;
-    for (const [platform, keywords] of Object.entries(PLATFORM_KEYWORDS)) {
-      if (keywords.some(k =>
-        hostname.includes(k) || (!k.includes('.') && url.toLowerCase().includes(k))
-      )) return platform;
+function extractAllUrlsFromMessage(session: any): string[] {
+  const content = session.content?.trim() || '';
+  const urls: string[] = [];
+
+  const linkMatches = linkTypeParser(content);
+  if (linkMatches.length > 0) {
+    for (const match of linkMatches) {
+      urls.push(match.url);
     }
-  } catch {}
-  return null;
+    return [...new Set(urls)];
+  }
+
+  if (content) {
+    const textUrls = extractUrl(content);
+    urls.push(...textUrls);
+  }
+
+  if (session.elements) {
+    for (const elem of session.elements) {
+      if (elem.type === 'xml' && elem.data) {
+        const urlRegex = /https?:\/\/[^\s<>"']+/gi;
+        let match;
+        while ((match = urlRegex.exec(elem.data)) !== null) {
+          urls.push(match[0]);
+        }
+      } else if (elem.type === 'json' && elem.data) {
+        try {
+          const json = JSON.parse(elem.data);
+          const extractFromObject = (obj: any) => {
+            if (!obj || typeof obj !== 'object') return;
+            for (const val of Object.values(obj)) {
+              if (typeof val === 'string') {
+                const match = val.match(/https?:\/\/[^\s<>"']+/gi);
+                if (match) urls.push(...match);
+              } else if (typeof val === 'object') extractFromObject(val);
+            }
+          };
+          extractFromObject(json);
+        } catch {}
+      }
+    }
+  }
+
+  return [...new Set(urls)];
 }
 
 function cleanUrl(url: string): string {
@@ -175,9 +230,9 @@ async function resolveShortUrl(url: string): Promise<string> {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://www.baidu.com/',
       },
-      validateStatus: status => true
+      validateStatus: (status: number) => status >= 200 && status < 400,
     });
-    const finalUrl = res.request.res?.responseUrl || url;
+    const finalUrl = (res.request as any)?.res?.responseUrl || url;
     return cleanUrl(finalUrl);
   } catch (e) {
     return cleanUrl(url);
@@ -189,7 +244,8 @@ function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
 function formatPublishTime(ms: number): string {
@@ -221,7 +277,7 @@ function parseApiResponse(raw: any, maxDescLen: number): ParsedData {
 
   const authorObj = data.author;
   let author = '', uid = '', avatar = '';
-  if (typeof authorObj === 'object' && authorObj) {
+  if (authorObj && typeof authorObj === 'object') {
     author = authorObj.name || authorObj.author || '';
     uid = String(authorObj.id || data.uid || '');
     avatar = authorObj.avatar || data.avatar || '';
@@ -237,11 +293,11 @@ function parseApiResponse(raw: any, maxDescLen: number): ParsedData {
 
   let video = '';
   let videos: VideoQuality[] = [];
-  if (data.video_backup?.length) {
+  if (Array.isArray(data.video_backup) && data.video_backup.length) {
     const bestQ = pickBestQuality(data.video_backup);
     videos = bestQ;
     video = bestQ[0]?.url || data.url || '';
-  } else if (data.videos?.length) {
+  } else if (Array.isArray(data.videos) && data.videos.length) {
     video = data.videos[0]?.url || '';
     videos = data.videos.map((v: any) => ({ quality: v.accept?.[0] || 'unknown', url: v.url }));
   } else {
@@ -259,15 +315,15 @@ function parseApiResponse(raw: any, maxDescLen: number): ParsedData {
   };
 
   const stats = extra.statistics || {};
-  const like = Number(data.like || stats.digg_count || 0);
-  const comment = Number(stats.comment_count || 0);
-  const collect = Number(stats.collect_count || 0);
-  const share = Number(stats.share_count || 0);
-  const play = Number(stats.play_count || 0);
+  const like = Number(data.like ?? stats.digg_count ?? 0);
+  const comment = Number(stats.comment_count ?? 0);
+  const collect = Number(stats.collect_count ?? 0);
+  const share = Number(stats.share_count ?? 0);
+  const play = Number(stats.play_count ?? 0);
 
   let duration = 0;
   if (data.duration) {
-    duration = typeof data.duration === 'string' ? parseInt(data.duration) : data.duration;
+    duration = typeof data.duration === 'string' ? parseInt(data.duration, 10) : data.duration;
     if (duration > 1000000) duration = Math.floor(duration / 1000);
   } else if (extra.duration_ms) {
     duration = Math.floor(extra.duration_ms / 1000);
@@ -275,7 +331,7 @@ function parseApiResponse(raw: any, maxDescLen: number): ParsedData {
 
   let publishTime = 0;
   if (data.time) {
-    publishTime = typeof data.time === 'number' ? data.time : parseInt(data.time);
+    publishTime = typeof data.time === 'number' ? data.time : parseInt(data.time, 10);
     if (publishTime < 1000000000000) publishTime *= 1000;
   } else if (extra.create_time) {
     publishTime = extra.create_time * 1000;
@@ -317,7 +373,7 @@ function generateFormattedText(p: ParsedData, format: string): string {
       for (const match of varMatches) {
         const varName = match.replace(/\$\{|\}/g, '');
         const val = vars[varName];
-        if (val !== undefined && val !== '' && val !== '0') {
+        if (val && val !== '0') {
           allEmpty = false;
           break;
         }
@@ -344,6 +400,54 @@ function buildForwardNode(session: any, content: any, botName: string) {
   return h('node', { user: { nickname: botName.substring(0, 15), user_id: session.selfId } }, messageContent);
 }
 
+const urlCache = new Map<string, { data: ParsedData; expire: number }>();
+const CACHE_TTL = 10 * 60 * 1000;
+
+async function downloadVideoFile(videoUrl: string, tempDir: string, timeout: number, maxSizeMB: number): Promise<string> {
+  await fs.mkdir(tempDir, { recursive: true });
+  const fileName = `video_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.mp4`;
+  const filePath = path.join(tempDir, fileName);
+  
+  const writer = createWriteStream(filePath);
+  const response = await axios({
+    method: 'GET',
+    url: videoUrl,
+    responseType: 'stream',
+    timeout: timeout,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    }
+  });
+
+  const maxSizeBytes = maxSizeMB * 1024 * 1024;
+  const contentLength = Number(response.headers['content-length'] || 0);
+  
+  if (maxSizeMB > 0 && contentLength > maxSizeBytes) {
+    writer.destroy();
+    await fs.unlink(filePath).catch(() => {});
+    throw new Error(`视频文件过大(${Math.round(contentLength/1024/1024)}MB)，超过限制(${maxSizeMB}MB)`);
+  }
+
+  let downloadedSize = 0;
+  response.data.on('data', (chunk: Buffer) => {
+    downloadedSize += chunk.length;
+    if (maxSizeMB > 0 && downloadedSize > maxSizeBytes) {
+      response.data.destroy();
+      writer.destroy();
+      fs.unlink(filePath).catch(() => {});
+      throw new Error(`视频文件过大，超过限制(${maxSizeMB}MB)`);
+    }
+  });
+
+  await pipeline(response.data, writer);
+  return filePath;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
 export function apply(ctx: Context, config: any) {
   debugEnabled = config.debug || false;
   debugLog('INFO', '插件初始化开始');
@@ -366,7 +470,15 @@ export function apply(ctx: Context, config: any) {
   });
 
   async function fetchApi(url: string): Promise<ParsedData> {
+    const cacheKey = url;
+    const cached = urlCache.get(cacheKey);
+    if (cached && cached.expire > Date.now()) {
+      debugLog('DEBUG', `使用缓存: ${url}`);
+      return cached.data;
+    }
+
     debugLog('INFO', `调用API解析: ${url}`);
+    let lastError: Error | null = null;
     for (let i = 0; i <= config.retryTimes; i++) {
       try {
         const res = await http.get('https://api.bugpk.com/api/short_videos', {
@@ -375,33 +487,34 @@ export function apply(ctx: Context, config: any) {
         });
         debugLog('DEBUG', `API响应: ${JSON.stringify(res.data)}`);
         if (res.data && (res.data.code === 200 || res.data.code === 0)) {
-          return parseApiResponse(res.data, config.maxDescLength);
+          const parsed = parseApiResponse(res.data, config.maxDescLength);
+          urlCache.set(cacheKey, { data: parsed, expire: Date.now() + CACHE_TTL });
+          return parsed;
         }
         throw new Error(res.data?.msg || '解析失败');
       } catch (error) {
-        debugLog('ERROR', `第${i+1}次请求失败: ${getErrorMessage(error)}`);
-        if (i < config.retryTimes) await delay(config.retryInterval * (i + 1));
+        lastError = error instanceof Error ? error : new Error(String(error));
+        debugLog('ERROR', `第${i+1}次请求失败: ${lastError.message}`);
+        if (i < config.retryTimes) {
+          await delay(config.retryInterval);
+        }
       }
     }
-    throw new Error('API请求全部失败');
+    throw lastError || new Error('API请求全部失败');
   }
 
   async function parseUrl(url: string): Promise<{ success: true; data: ParsedData } | { success: false; msg: string }> {
     const realUrl = await resolveShortUrl(url);
-    const platform = getPlatformType(realUrl);
-    if (!platform) {
-      return { success: false, msg: texts.unsupportedPlatformText };
-    }
-
-    for (const candidate of [url, realUrl]) {
+    const candidates = [realUrl, url];
+    for (const candidate of [...new Set(candidates)]) {
       try {
         const info = await fetchApi(candidate);
         return { success: true, data: info };
       } catch (error) {
-        debugLog('ERROR', `候选链接解析失败: ${candidate}`);
+        debugLog('ERROR', `候选链接解析失败: ${candidate}`, getErrorMessage(error));
       }
     }
-    return { success: false, msg: '解析失败' };
+    return { success: false, msg: texts.unsupportedPlatformText };
   }
 
   async function processSingleUrl(url: string): Promise<
@@ -417,18 +530,23 @@ export function apply(ctx: Context, config: any) {
   async function sendWithTimeout(session: any, content: any, customRetries?: number): Promise<any> {
     const maxRetries = customRetries ?? config.retryTimes ?? 3;
     const retryDelay = config.retryInterval || 1000;
+    let timeoutId: NodeJS.Timeout | null = null;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        if (config.videoSendTimeout <= 0) {
-          return await session.send(content);
+        let sendPromise = session.send(content);
+        if (config.videoSendTimeout > 0) {
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('发送超时')), config.videoSendTimeout);
+          });
+          const result = await Promise.race([sendPromise, timeoutPromise]);
+          if (timeoutId) clearTimeout(timeoutId);
+          return result;
         } else {
-          return await Promise.race([
-            session.send(content),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('发送超时')), config.videoSendTimeout))
-          ]);
+          return await sendPromise;
         }
       } catch (err) {
+        if (timeoutId) clearTimeout(timeoutId);
         const errMsg = getErrorMessage(err);
         debugLog('ERROR', `第${attempt + 1}次发送失败: ${errMsg}`);
         if (attempt < maxRetries) {
@@ -443,19 +561,57 @@ export function apply(ctx: Context, config: any) {
     return null;
   }
 
+  async function sendVideoFile(session: any, videoUrl: string): Promise<any> {
+    if (!videoUrl) throw new Error('视频链接为空');
+
+    try {
+      debugLog('INFO', `尝试直接发送视频URL: ${videoUrl.substring(0, 100)}...`);
+      return await sendWithTimeout(session, h.video(videoUrl));
+    } catch (err) {
+      debugLog('ERROR', `直接发送URL失败，开始下载视频: ${getErrorMessage(err)}`);
+      
+      let tempFilePath: string | null = null;
+      try {
+        tempFilePath = await downloadVideoFile(
+          videoUrl, 
+          config.tempDir || './temp_videos', 
+          config.videoDownloadTimeout || 120000,
+          config.maxVideoSize || 0
+        );
+        const localFile = `file://${path.resolve(tempFilePath)}`;
+        debugLog('INFO', `视频下载完成，发送本地文件: ${localFile}`);
+        return await sendWithTimeout(session, h.video(localFile));
+      } finally {
+        if (tempFilePath) {
+          fs.unlink(tempFilePath).catch(e => debugLog('WARN', `删除临时文件失败: ${e}`));
+        }
+      }
+    }
+  }
+
   async function flush(session: any, urls: string[]) {
+    const uniqueUrls = [...new Set(urls)];
     const items: { text: string; parsed: ParsedData }[] = [];
     const errors: string[] = [];
 
-    for (const url of urls) {
-      const res = await processSingleUrl(url);
-      if (res.success) {
-        items.push(res.data);
-      } else {
-        const item = texts.parseErrorItemFormat
-          .replace(/\$\{url\}/g, url.length > 50 ? url.slice(0,50)+'...' : url)
-          .replace(/\$\{msg\}/g, res.msg);
-        errors.push(item);
+    const concurrency = 3;
+    const chunks = [];
+    for (let i = 0; i < uniqueUrls.length; i += concurrency) {
+      chunks.push(uniqueUrls.slice(i, i + concurrency));
+    }
+    for (const chunk of chunks) {
+      const results = await Promise.all(chunk.map(url => processSingleUrl(url)));
+      for (let idx = 0; idx < results.length; idx++) {
+        const res = results[idx];
+        if (res.success) {
+          items.push(res.data);
+        } else {
+          const url = chunk[idx];
+          const item = texts.parseErrorItemFormat
+            .replace(/\$\{url\}/g, url.length > 50 ? url.slice(0,50)+'...' : url)
+            .replace(/\$\{msg\}/g, res.msg);
+          errors.push(item);
+        }
       }
     }
 
@@ -467,62 +623,88 @@ export function apply(ctx: Context, config: any) {
 
     const enableForward = config.enableForward && session.platform === 'onebot';
     const botName = config.botName || '视频解析机器人';
-    const forwardMessages: any[] = [];
 
-    for (const item of items) {
-      const p = item.parsed;
-      const text = item.text;
+    if (enableForward) {
+      const forwardMessages: any[] = [];
+      for (const item of items) {
+        const p = item.parsed;
+        const text = item.text;
 
-      if (text && config.showImageText) {
-        if (enableForward) forwardMessages.push(buildForwardNode(session, text, botName));
-        else { await sendWithTimeout(session, text); await delay(300); }
-      }
-
-      if (p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
-        if (enableForward) forwardMessages.push(buildForwardNode(session, h.image(p.cover), botName));
-        else { await sendWithTimeout(session, h.image(p.cover)).catch(() => {}); await delay(300); }
-      }
-
-      if (p.video && config.showVideoFile && (p.type === 'video' || (p.type === 'live' && !p.live_photo?.length && !p.images?.length))) {
-        const videoMsg = h.video(p.video);
-        if (enableForward) {
-          forwardMessages.push(buildForwardNode(session, videoMsg, botName));
-        } else {
-          await sendWithTimeout(session, videoMsg).catch(() => {});
-          await delay(500);
+        if (text && config.showImageText) {
+          forwardMessages.push(buildForwardNode(session, text, botName));
+        }
+        if (p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+          forwardMessages.push(buildForwardNode(session, h.image(p.cover), botName));
+        }
+        if (p.type === 'image' || p.type === 'live_photo' || (p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+          const imageUrls = p.images?.length ? p.images : (p.live_photo?.map(lp => lp.image) ?? []);
+          for (const imgUrl of imageUrls) {
+            forwardMessages.push(buildForwardNode(session, h.image(imgUrl), botName));
+          }
         }
       }
 
-      if (p.type === 'image' || p.type === 'live_photo' || (p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
-        const imageUrls = p.images?.length ? p.images : (p.live_photo?.map(lp => lp.image) ?? []);
-        if (enableForward) {
-          for (const url of imageUrls) {
-            forwardMessages.push(buildForwardNode(session, h.image(url), botName));
+      if (forwardMessages.length) {
+        const forwardMsg = h('message', { forward: true }, forwardMessages.slice(0, 100));
+        try {
+          await sendWithTimeout(session, forwardMsg, config.retryTimes);
+        } catch (err) {
+          debugLog('ERROR', '合并转发发送失败，降级为逐条发送:', err);
+          for (const node of forwardMessages) {
+            await sendWithTimeout(session, node.data.content).catch(() => {});
+            await delay(300);
           }
-        } else {
-          for (const url of imageUrls) {
-            await sendWithTimeout(session, h.image(url)).catch(() => {});
+        }
+      }
+
+      for (const item of items) {
+        const p = item.parsed;
+        if (p.video && config.showVideoFile && (p.type === 'video' || (p.type === 'live' && !p.live_photo?.length && !p.images?.length))) {
+          try {
+            await sendVideoFile(session, p.video);
+          } catch (err) {
+            debugLog('ERROR', `视频发送失败（降级发送链接）: ${getErrorMessage(err)}`);
+            await sendWithTimeout(session, `视频链接：${p.video}`).catch(() => {});
+          }
+          await delay(500);
+        }
+      }
+    } else {
+      for (const item of items) {
+        const p = item.parsed;
+        const text = item.text;
+
+        if (text && config.showImageText) {
+          await sendWithTimeout(session, text);
+          await delay(300);
+        }
+        if (p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+          await sendWithTimeout(session, h.image(p.cover)).catch(() => {});
+          await delay(300);
+        }
+        if (p.video && config.showVideoFile && (p.type === 'video' || (p.type === 'live' && !p.live_photo?.length && !p.images?.length))) {
+          try {
+            await sendVideoFile(session, p.video);
+          } catch (err) {
+            debugLog('ERROR', `视频发送失败（降级发送链接）: ${getErrorMessage(err)}`);
+            await sendWithTimeout(session, `视频链接：${p.video}`).catch(() => {});
+          }
+          await delay(500);
+        }
+        if (p.type === 'image' || p.type === 'live_photo' || (p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+          const imageUrls = p.images?.length ? p.images : (p.live_photo?.map(lp => lp.image) ?? []);
+          for (const imgUrl of imageUrls) {
+            await sendWithTimeout(session, h.image(imgUrl)).catch(() => {});
             await delay(200);
           }
         }
       }
     }
-
-    if (enableForward && forwardMessages.length) {
-      const forwardMsg = h('message', { forward: true }, forwardMessages.slice(0, 100));
-      await sendWithTimeout(session, forwardMsg, config.retryTimes).catch(() => {
-        debugLog('ERROR', '合并转发发送最终失败，降级为逐条发送');
-        forwardMessages.forEach(async (node) => {
-          try { await sendWithTimeout(session, node.data.content); await delay(300); } catch {}
-        });
-      });
-    }
   }
 
   ctx.on('message', async (session) => {
     if (!config.enable) return;
-    const content = session.content?.trim() || '';
-    const urls = extractUrl(content);
+    const urls = extractAllUrlsFromMessage(session);
     if (!urls.length) return;
 
     if (config.showWaitingTip) {
@@ -538,6 +720,25 @@ export function apply(ctx: Context, config: any) {
       return;
     }
     await flush(session, us);
+  });
+
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, { expire }] of urlCache.entries()) {
+      if (expire <= now) urlCache.delete(key);
+    }
+  }, 60000);
+
+  process.on('exit', async () => {
+    try {
+      const tempDir = config.tempDir || './temp_videos';
+      const files = await fs.readdir(tempDir);
+      for (const file of files) {
+        if (file.startsWith('video_') && file.endsWith('.mp4')) {
+          await fs.unlink(path.join(tempDir, file)).catch(() => {});
+        }
+      }
+    } catch {}
   });
 
   debugLog('INFO', '插件初始化完成');

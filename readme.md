@@ -5,22 +5,28 @@
 ### 中文
 这是一个为 Koishi 机器人框架开发的**全平台视频/图集解析插件**，使用统一API接口，支持自动识别并解析抖音、快手、B站、小红书、微博、YouTube、TikTok、剪映、AcFun、知乎、虎牙等20+主流平台的短视频/图集/实况链接。核心特性：
 - 🌐 统一API解析，覆盖20+热门平台，无需繁琐配置
-- 🤖 自动识别链接来源，即丢即用
+- 🤖 自动识别链接来源，即丢即用，并支持解析 XML/JSON 卡片消息中的链接（如 QQ/OneBot 平台的分享卡片）
 - 🎨 完全自定义的解析结果格式，支持多项变量替换，变量无值自动隐藏行
 - 🐛 内置Debug调试模式，可详细记录所有操作与API交互日志
 - 📤 支持OneBot平台消息合并转发，优化多图文展示体验
 - 💬 所有提示文案均可自定义，适配多语言场景
 - 🔁 消息发送支持自动重试，与API重试配置联动，增强稳定性
+- 🚀 内置内存缓存，避免短时间内重复解析同一链接；并发控制，防止资源耗尽
+- ⚡ 优先直接发送视频URL，失败自动降级为本地文件发送，大幅提升性能
+- 🛡️ 可选视频大小限制，防止超大文件占满服务器磁盘；自动清理所有临时文件
 
 ### English
 This is a **multi-platform video/image parsing plugin** developed for the Koishi bot framework, using a unified API interface to automatically recognize and parse short video/image/live photo links from 20+ mainstream platforms such as Douyin, Kuaishou, Bilibili, Xiaohongshu, Weibo, YouTube, TikTok, Jianying, AcFun, Zhihu, Huya and more. Core features:
 - 🌐 Unified API parsing, covering 20+ popular platforms without complex configuration
-- 🤖 Auto-detection of link sources, just drop & go
+- 🤖 Auto-detection of link sources, drop & go, and support for extracting links from XML/JSON card messages (e.g., share cards on QQ/OneBot)
 - 🎨 Fully customizable parsing result format with variable substitutions, empty variables hide the line automatically
 - 🐛 Built-in Debug mode, recording detailed operations and API interaction logs
 - 📤 Support OneBot message forwarding for better image/video display
 - 💬 All prompt texts are customizable for multilingual scenarios
 - 🔁 Message sending supports automatic retries, linked with API retry configuration for improved stability
+- 🚀 Built-in memory cache to avoid repeated parsing of the same URL; concurrency control to prevent resource exhaustion
+- ⚡ Priority to send video URL directly, automatically downgrade to local file sending on failure, greatly improving performance
+- 🛡️ Optional video size limit to prevent oversized files from filling up server disk; automatic cleanup of all temporary files
 
 ## 项目仓库 (Repository)
 - GitHub: `https://github.com/Minecraft-1314/koishi-plugin-video-parser-all`
@@ -53,13 +59,16 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 | `showImageText` | boolean | true | 是否发送解析后的文字内容 |
 | `showVideoFile` | boolean | true | 是否发送视频文件（关闭则只发送视频链接） |
 | `maxDescLength` | number | 200 | 简介内容最大长度（字符），超出自动截断 |
+| `videoDownloadTimeout` | number | 120000 | 视频下载超时（毫秒） |
+| `tempDir` | string | `./temp_videos` | 临时视频存储目录 |
+| `maxVideoSize` | number | 0 | 最大下载视频大小（MB），0 为不限制大小 |
 
 ### 网络与 API 设置
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `timeout` | number | 180000 | API 请求超时时间（毫秒） |
 | `videoSendTimeout` | number | 60000 | 视频消息发送超时时间（毫秒，0 为不限制） |
-| `userAgent` | string | Chrome 124 UA | API 请求使用的 User-Agent |
+| `userAgent` | string | `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36` | API 请求使用的 User-Agent |
 
 ### 错误与重试设置
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -80,7 +89,7 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 | `unsupportedPlatformText` | string | 不支持该平台链接 | 不支持的平台提示 |
 | `invalidLinkText` | string | 无效的视频链接 | 无效链接提示（parse 指令） |
 | `parseErrorPrefix` | string | ❌ 解析失败： | 解析失败消息前缀 |
-| `parseErrorItemFormat` | string | 【${url}】: ${msg} | 每条解析失败的展示格式，可用 ${url}（链接）和 ${msg}（错误信息） |
+| `parseErrorItemFormat` | string | `【${url}】: ${msg}` | 每条解析失败的展示格式，可用 ${url}（链接）和 ${msg}（错误信息） |
 
 ## 支持的变量 (Supported Variables)
 在 `unifiedMessageFormat` 中可使用以下变量进行自定义格式化，某行所有变量均为空（或为"0"）时该行不显示：

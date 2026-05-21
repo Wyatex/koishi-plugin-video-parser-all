@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-video-parser-all",
   "description": "Koishi 全平台视频解析插件，支持抖音/快手/B站/微博/小红书/剪映/YouTube/TikTok等20+平台",
-  "version": "0.9.6",
+  "version": "1.0.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -57,7 +57,8 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "axios": "^1.6.8",
+    "axios": "^1.16.1",
+    "fast-xml-parser": "^4.5.6",
     "stream": "^0.0.3"
   },
   "peerDependencies": {
