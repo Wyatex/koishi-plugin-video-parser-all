@@ -1,10 +1,11 @@
 import { Context, Schema, h, Logger } from 'koishi'
-import axios, { AxiosInstance } from 'axios'
+import axios from 'axios'
 import fs from 'fs/promises'
 import path from 'path'
 import { createWriteStream } from 'fs'
 import { pipeline } from 'stream/promises'
-import { LRUCache } from 'lru-cache'
+const LruCacheModule = require('lru-cache')
+const LRUCache = LruCacheModule.LRUCache || LruCacheModule
 
 export const name = 'video-parser-all'
 
@@ -47,6 +48,10 @@ export const Config = Schema.intersect([
   Schema.object({
     enableForward: Schema.boolean().default(false).description('启用合并转发（仅 OneBot 平台）'),
   }).description('发送方式设置'),
+
+  Schema.object({
+    deduplicationInterval: Schema.number().min(0).step(1).default(180).description('禁止重复解析时间间隔（秒），0 为不限制'),
+  }).description('去重设置'),
 
   Schema.object({
     primaryApiUrl: Schema.string().default('https://api.bugpk.com/api/short_videos').description('主 API 地址'),
@@ -158,7 +163,7 @@ interface LinkMatch {
   id: string
 }
 
-const urlCache = new LRUCache<string, { data: ParsedData; expire: number }>({
+const urlCache = new LRUCache({
   max: 500,
   ttl: 10 * 60 * 1000,
   updateAgeOnGet: false,
@@ -280,25 +285,6 @@ function cleanUrl(url: string): string {
   } catch (e) {
     debugLog('WARN', '清理URL失败:', e, '原始URL:', url)
     return url.replace(/&amp;/g, '&').replace(/\?.*/, '')
-  }
-}
-
-async function resolveShortUrl(url: string): Promise<string> {
-  try {
-    const res = await axios.get(url, {
-      timeout: 10000,
-      maxRedirects: 10,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.baidu.com/',
-      },
-      validateStatus: (status: number) => status >= 200 && status < 400,
-    })
-    const finalUrl = (res.request as any)?.res?.responseUrl || url
-    return cleanUrl(finalUrl)
-  } catch (e) {
-    debugLog('WARN', '解析短链接失败:', e, '原始URL:', url)
-    return cleanUrl(url)
   }
 }
 
@@ -500,56 +486,6 @@ function buildForwardNode(session: any, content: any, botName: string) {
   }, messageContent)
 }
 
-async function downloadVideoFile(videoUrl: string, tempDir: string, timeout: number, maxSizeMB: number): Promise<string> {
-  if (!videoUrl) throw new Error('视频链接为空')
-
-  await fs.mkdir(tempDir, { recursive: true })
-  const fileName = `video_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.mp4`
-  const filePath = path.resolve(tempDir, fileName)
-  
-  debugLog('INFO', `开始下载视频: ${videoUrl.substring(0, 100)}...`)
-  debugLog('INFO', `临时文件路径: ${filePath}`)
-
-  const writer = createWriteStream(filePath)
-  let response
-  
-  try {
-    response = await axios({
-      method: 'GET',
-      url: videoUrl,
-      responseType: 'stream',
-      timeout: timeout,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.bilibili.com/',
-      },
-      validateStatus: (status) => status >= 200 && status < 300,
-    })
-  } catch (e) {
-    writer.destroy()
-    await fs.unlink(filePath).catch(() => {})
-    throw new Error(`下载视频失败: ${getErrorMessage(e)}`)
-  }
-
-  const maxSizeBytes = maxSizeMB * 1024 * 1024
-  const contentLength = Number(response.headers['content-length'] || 0)
-  
-  if (maxSizeMB > 0 && contentLength > maxSizeBytes) {
-    writer.destroy()
-    await fs.unlink(filePath).catch(() => {})
-    throw new Error(`视频文件过大(${Math.round(contentLength/1024/1024)}MB)，超过限制(${maxSizeMB}MB)`)
-  }
-
-  try {
-    await pipeline(response.data, writer)
-    debugLog('INFO', `视频下载完成`)
-    return filePath
-  } catch (e) {
-    await fs.unlink(filePath).catch(() => {})
-    throw new Error(`写入视频文件失败: ${getErrorMessage(e)}`)
-  }
-}
-
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
@@ -559,6 +495,11 @@ export function apply(ctx: Context, config: any) {
   debugEnabled = config.debug || false
   debugLog('INFO', '插件初始化开始')
 
+  const dedupCache = new LRUCache({
+    max: 1000,
+    ttl: config.deduplicationInterval * 1000,
+  })
+
   const texts = {
     waitingTipText: config.waitingTipText || '正在解析视频，请稍候...',
     unsupportedPlatformText: config.unsupportedPlatformText || '不支持该平台链接',
@@ -567,7 +508,7 @@ export function apply(ctx: Context, config: any) {
     parseErrorItemFormat: config.parseErrorItemFormat || '【${url}】: ${msg}',
   }
 
-  const http: AxiosInstance = axios.create({
+  const http = axios.create({
     timeout: config.timeout,
     headers: {
       'User-Agent': config.userAgent,
@@ -602,6 +543,76 @@ export function apply(ctx: Context, config: any) {
 
     const dedicatedFirst = config.platformDedicatedFirst?.[type] ?? false
     return { apiUrl, dedicatedFirst }
+  }
+
+  async function resolveShortUrl(url: string): Promise<string> {
+    try {
+      const res = await http.get(url, {
+        timeout: 10000,
+        maxRedirects: 10,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://www.baidu.com/',
+        },
+        validateStatus: (status: number) => status >= 200 && status < 400,
+      })
+      const finalUrl = (res.request as any)?.res?.responseUrl || url
+      return cleanUrl(finalUrl)
+    } catch (e) {
+      debugLog('WARN', '解析短链接失败:', e, '原始URL:', url)
+      return cleanUrl(url)
+    }
+  }
+
+  async function downloadVideoFile(videoUrl: string): Promise<string> {
+    if (!videoUrl) throw new Error('视频链接为空')
+
+    const tempDir = config.tempDir || './temp_videos'
+    await fs.mkdir(tempDir, { recursive: true })
+    const fileName = `video_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.mp4`
+    const filePath = path.resolve(tempDir, fileName)
+    
+    debugLog('INFO', `开始下载视频: ${videoUrl.substring(0, 100)}...`)
+    debugLog('INFO', `临时文件路径: ${filePath}`)
+
+    const writer = createWriteStream(filePath)
+    let response
+    
+    try {
+      response = await http({
+        method: 'GET',
+        url: videoUrl,
+        responseType: 'stream',
+        timeout: config.videoDownloadTimeout || 120000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://www.bilibili.com/',
+        },
+        validateStatus: (status: number) => status >= 200 && status < 300,
+      })
+    } catch (e) {
+      writer.destroy()
+      await fs.unlink(filePath).catch(() => {})
+      throw new Error(`下载视频失败: ${getErrorMessage(e)}`)
+    }
+
+    const maxSizeBytes = (config.maxVideoSize || 0) * 1024 * 1024
+    const contentLength = Number(response.headers['content-length'] || 0)
+    
+    if (maxSizeBytes > 0 && contentLength > maxSizeBytes) {
+      writer.destroy()
+      await fs.unlink(filePath).catch(() => {})
+      throw new Error(`视频文件过大(${Math.round(contentLength/1024/1024)}MB)，超过限制(${config.maxVideoSize}MB)`)
+    }
+
+    try {
+      await pipeline(response.data, writer)
+      debugLog('INFO', `视频下载完成`)
+      return filePath
+    } catch (e) {
+      await fs.unlink(filePath).catch(() => {})
+      throw new Error(`写入视频文件失败: ${getErrorMessage(e)}`)
+    }
   }
 
   async function fetchApi(url: string, type: string): Promise<ParsedData> {
@@ -742,12 +753,7 @@ export function apply(ctx: Context, config: any) {
 
     if (config.forceDownloadVideo) {
       try {
-        const tempFilePath = await downloadVideoFile(
-          videoUrl,
-          config.tempDir || './temp_videos',
-          config.videoDownloadTimeout || 120000,
-          config.maxVideoSize || 0
-        )
+        const tempFilePath = await downloadVideoFile(videoUrl)
         const localFile = `file://${tempFilePath}`
         await sendWithTimeout(session, h.video(localFile))
         return
@@ -771,12 +777,7 @@ export function apply(ctx: Context, config: any) {
     } catch (urlErr) {
       debugLog('ERROR', '直接发送URL失败，尝试下载:', getErrorMessage(urlErr))
       try {
-        const tempFilePath = await downloadVideoFile(
-          videoUrl,
-          config.tempDir || './temp_videos',
-          config.videoDownloadTimeout || 120000,
-          config.maxVideoSize || 0
-        )
+        const tempFilePath = await downloadVideoFile(videoUrl)
         const localFile = `file://${tempFilePath}`
         await sendWithTimeout(session, h.video(localFile))
         return
@@ -795,11 +796,26 @@ export function apply(ctx: Context, config: any) {
 
     for (let i = 0; i < matches.length; i++) {
       const match = matches[i]
+
+      if (config.deduplicationInterval > 0) {
+        const lastTime = dedupCache.get(match.url)
+        if (lastTime && (Date.now() - lastTime < config.deduplicationInterval * 1000)) {
+          debugLog('INFO', `跳过重复链接: ${match.url}`)
+          const shortUrl = match.url.length > 50 ? match.url.slice(0, 50) + '...' : match.url
+          const skipMsg = `链接 ${shortUrl} 在最近 ${config.deduplicationInterval} 秒内已解析过，已跳过。`
+          await sendWithTimeout(session, skipMsg).catch(() => {})
+          continue
+        }
+      }
+
       debugLog('INFO', `正在解析第 ${i+1}/${matches.length} 个链接: ${match.url} (平台: ${match.type})`)
       
       const result = await processSingleUrl(match.url, match.type)
       if (result.success) {
         items.push(result.data)
+        if (config.deduplicationInterval > 0) {
+          dedupCache.set(match.url, Date.now())
+        }
       } else {
         const item = texts.parseErrorItemFormat
           .replace(/\$\{url\}/g, match.url.length > 50 ? match.url.slice(0,50)+'...' : match.url)
@@ -973,6 +989,7 @@ export function apply(ctx: Context, config: any) {
   ctx.on('dispose', () => {
     clearInterval(tempCleanupInterval)
     urlCache.clear()
+    dedupCache.clear()
     debugLog('INFO', '插件已卸载，资源已清理')
   })
 

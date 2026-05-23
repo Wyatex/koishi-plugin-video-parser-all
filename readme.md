@@ -71,6 +71,11 @@ This is a **multi-platform video/image parsing plugin** developed for the Koishi
 |--------|------|--------|------|
 | `enableForward` | boolean | false | 是否启用合并转发（仅 OneBot 平台），启用后视频与图文将整合进同一条合并消息 |
 
+### 去重设置
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `deduplicationInterval` | number | 180 | 禁止重复解析时间间隔（秒），0 为不限制。同一个链接在间隔内不会重复解析。 |
+
 ### 界面文字设置
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
