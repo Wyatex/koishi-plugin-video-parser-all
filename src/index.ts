@@ -262,7 +262,7 @@ function cleanUrl(url: string): string {
   try {
     url = url.replace(/&amp;/g, '&')
     const urlObj = new URL(url)
-    
+
     if (urlObj.protocol === 'http:') {
       urlObj.protocol = 'https:'
     }
@@ -273,7 +273,7 @@ function cleanUrl(url: string): string {
       })
       return urlObj.origin + urlObj.pathname
     }
-    
+
     if (urlObj.hostname.includes('bilibili.com') || urlObj.hostname.includes('b23.tv')) {
       ['share_source', 'share_medium', 'share_plat', 'share_session_id', 'share_tag', 'timestamp'].forEach(p => {
         urlObj.searchParams.delete(p)
@@ -308,10 +308,10 @@ function pickBestQuality(videoBackup: any[]): VideoQuality[] {
   if (!Array.isArray(videoBackup)) return []
   return videoBackup
     .filter(v => v && v.url)
-    .map(v => ({ 
-      quality: v.quality || v.label || 'unknown', 
-      url: v.url, 
-      bit_rate: Number(v.bit_rate || 0) 
+    .map(v => ({
+      quality: v.quality || v.label || 'unknown',
+      url: v.url,
+      bit_rate: Number(v.bit_rate || 0)
     }))
     .sort((a, b) => b.bit_rate - a.bit_rate)
 }
@@ -347,44 +347,44 @@ function parseApiResponse(raw: any, maxDescLen: number): ParsedData {
 
   let video = ''
   let videos: VideoQuality[] = []
-  
+
   if (Array.isArray(data.video_backup) && data.video_backup.length) {
     const bestQ = pickBestQuality(data.video_backup)
     videos = bestQ
     video = bestQ[0]?.url || ''
   }
-  
+
   if (!video && Array.isArray(data.videos) && data.videos.length) {
     const validVideos = data.videos.filter((v: any) => v && v.url)
     if (validVideos.length) {
       video = validVideos[0].url
-      videos = validVideos.map((v: any) => ({ 
-        quality: v.accept?.[0] || 'unknown', 
-        url: v.url 
+      videos = validVideos.map((v: any) => ({
+        quality: v.accept?.[0] || 'unknown',
+        url: v.url
       }))
     }
   }
-  
+
   if (!video && data.url) {
     video = data.url
   }
-  
+
   if (video && !video.startsWith('http')) {
     video = 'https:' + video
   }
 
-  const images: string[] = Array.isArray(data.images) 
+  const images: string[] = Array.isArray(data.images)
     ? data.images.filter((img: any) => img && typeof img === 'string').map((img: any) => {
         if (!img.startsWith('http')) return 'https:' + img
         return img
-      }) 
+      })
     : []
-  
-  const live_photo = Array.isArray(data.live_photo) 
+
+  const live_photo = Array.isArray(data.live_photo)
     ? data.live_photo.filter((lp: any) => lp && lp.image).map((lp: any) => ({
         image: lp.image.startsWith('http') ? lp.image : 'https:' + lp.image,
         video: lp.video ? (lp.video.startsWith('http') ? lp.video : 'https:' + lp.video) : ''
-      })) 
+      }))
     : []
 
   const music = {
@@ -478,11 +478,11 @@ function buildForwardNode(session: any, content: any, botName: string) {
   if (Array.isArray(content)) messageContent = content
   else if (content && typeof content === 'object' && content.type) messageContent = [content]
   else messageContent = [h.text(String(content))]
-  return h('node', { 
-    user: { 
-      nickname: botName.substring(0, 15), 
-      user_id: session.selfId 
-    } 
+  return h('node', {
+    user: {
+      nickname: botName.substring(0, 15),
+      user_id: session.selfId
+    }
   }, messageContent)
 }
 
@@ -564,55 +564,73 @@ export function apply(ctx: Context, config: any) {
     }
   }
 
-  async function downloadVideoFile(videoUrl: string): Promise<string> {
+    async function downloadVideoFile(videoUrl: string): Promise<string> {
     if (!videoUrl) throw new Error('视频链接为空')
 
     const tempDir = config.tempDir || './temp_videos'
     await fs.mkdir(tempDir, { recursive: true })
     const fileName = `video_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.mp4`
     const filePath = path.resolve(tempDir, fileName)
-    
+
     debugLog('INFO', `开始下载视频: ${videoUrl.substring(0, 100)}...`)
     debugLog('INFO', `临时文件路径: ${filePath}`)
 
-    const writer = createWriteStream(filePath)
-    let response
-    
-    try {
-      response = await http({
-        method: 'GET',
-        url: videoUrl,
-        responseType: 'stream',
-        timeout: config.videoDownloadTimeout || 120000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://www.bilibili.com/',
-        },
-        validateStatus: (status: number) => status >= 200 && status < 300,
-      })
-    } catch (e) {
-      writer.destroy()
-      await fs.unlink(filePath).catch(() => {})
-      throw new Error(`下载视频失败: ${getErrorMessage(e)}`)
-    }
-
     const maxSizeBytes = (config.maxVideoSize || 0) * 1024 * 1024
-    const contentLength = Number(response.headers['content-length'] || 0)
-    
-    if (maxSizeBytes > 0 && contentLength > maxSizeBytes) {
-      writer.destroy()
-      await fs.unlink(filePath).catch(() => {})
-      throw new Error(`视频文件过大(${Math.round(contentLength/1024/1024)}MB)，超过限制(${config.maxVideoSize}MB)`)
+    let lastError: Error | null = null
+
+    // 使用配置的重试次数进行循环 (总共尝试 retryTimes + 1 次)
+    for (let attempt = 0; attempt <= config.retryTimes; attempt++) {
+      let writer: ReturnType<typeof createWriteStream> | null = null
+
+      try {
+        if (attempt > 0) {
+          debugLog('INFO', `第 ${attempt + 1} 次尝试下载视频...`)
+          await delay(config.retryInterval || 1000)
+        }
+
+        const response = await http({
+          method: 'GET',
+          url: videoUrl,
+          responseType: 'stream',
+          timeout: config.videoDownloadTimeout || 120000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.bilibili.com/',
+          },
+          validateStatus: (status: number) => status >= 200 && status < 300,
+        })
+
+        const contentLength = Number(response.headers['content-length'] || 0)
+        if (maxSizeBytes > 0 && contentLength > maxSizeBytes) {
+          // 文件过大是确定性业务错误，无需重试，直接抛出
+          throw new Error(`视频文件过大(${Math.round(contentLength/1024/1024)}MB)，超过限制(${config.maxVideoSize}MB)`)
+        }
+
+        // 每次重试都必须创建全新的写入流
+        writer = createWriteStream(filePath)
+        await pipeline(response.data, writer)
+
+        debugLog('INFO', `视频下载完成`)
+        return filePath
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e))
+        debugLog('ERROR', `视频下载第 ${attempt + 1} 次尝试失败: ${getErrorMessage(lastError)}`)
+
+        // 安全销毁流，防止文件句柄泄露
+        if (writer) {
+          writer.destroy()
+        }
+        // 清理可能产生的残缺临时文件
+        await fs.unlink(filePath).catch(() => {})
+
+        // 拦截无需重试的业务错误，提前跳出循环
+        if (lastError.message.includes('视频文件过大')) {
+          break
+        }
+      }
     }
 
-    try {
-      await pipeline(response.data, writer)
-      debugLog('INFO', `视频下载完成`)
-      return filePath
-    } catch (e) {
-      await fs.unlink(filePath).catch(() => {})
-      throw new Error(`写入视频文件失败: ${getErrorMessage(e)}`)
-    }
+    throw new Error(`下载视频失败，已重试 ${config.retryTimes} 次: ${lastError ? getErrorMessage(lastError) : '未知错误'}`)
   }
 
   async function fetchApi(url: string, type: string): Promise<ParsedData> {
@@ -669,40 +687,70 @@ export function apply(ctx: Context, config: any) {
     throw lastError || new Error('所有API请求全部失败')
   }
 
-  async function parseUrl(url: string, type: string): Promise<{ success: true; data: ParsedData } | { success: false; msg: string }> {
+   async function parseUrl(url: string, type: string): Promise<{ success: true; data: ParsedData } | { success: false; msg: string }> {
     const realUrl = await resolveShortUrl(url)
-    const candidates = [realUrl, url]
-    for (const candidate of [...new Set(candidates)]) {
-      try {
-        const info = await fetchApi(candidate, type)
-        if (info.video || info.images.length > 0) {
-          return { success: true, data: info }
+    // 去重：避免短链解析后与原链接相同导致重复请求
+    const candidates = [...new Set([realUrl, url])]
+
+    let lastError: Error | null = null
+
+    // 外层：遍历候选链接（优先真实长链，其次原始短链）
+    for (const candidate of candidates) {
+      // 内层：对当前候选链接执行重试
+      for (let attempt = 0; attempt <= config.retryTimes; attempt++) {
+        try {
+          if (attempt > 0) {
+            debugLog('INFO', `候选链接第 ${attempt + 1} 次重试: ${candidate}`)
+            await delay(config.retryInterval || 1000)
+          }
+
+          const info = await fetchApi(candidate, type)
+
+          // ✅ 解析成功且有有效内容，立即返回（短路成功）
+          if (info.video || info.images.length > 0) {
+            if (attempt > 0) {
+              debugLog('INFO', `候选链接在第 ${attempt + 1} 次重试时恢复成功: ${candidate}`)
+            }
+            return { success: true, data: info }
+          }
+
+          // ⚠️ 解析成功但无内容，属于业务层面的"空结果"，无需重试，直接尝试下一个候选
+          debugLog('WARN', `解析成功但无有效内容: ${candidate}`)
+          break
+
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error))
+          debugLog('ERROR', `候选链接第 ${attempt + 1} 次尝试失败: ${candidate} - ${getErrorMessage(lastError)}`)
+
+          // 如果是最后一次重试仍失败，记录日志后继续尝试下一个候选链接
+          if (attempt === config.retryTimes) {
+            debugLog('WARN', `候选链接 ${candidate} 所有重试耗尽，切换下一个候选`)
+          }
         }
-        debugLog('WARN', `解析成功但无有效内容: ${candidate}`)
-      } catch (error) {
-        debugLog('ERROR', `候选链接解析失败: ${candidate}`, getErrorMessage(error))
       }
     }
+
+    // 🚫 所有候选链接的所有重试均失败
     return { success: false, msg: texts.unsupportedPlatformText }
   }
 
   async function processSingleUrl(url: string, type: string): Promise<
-    { success: true; data: { text: string; parsed: ParsedData } } | 
+    { success: true; data: { text: string; parsed: ParsedData } } |
     { success: false; msg: string; url: string }
   > {
     const result = await parseUrl(url, type)
     if (!result.success) {
       return { success: false, msg: result.msg, url }
     }
-    
+
     const text = generateFormattedText(result.data, config.unifiedMessageFormat)
-    
-    return { 
-      success: true, 
-      data: { 
-        text, 
+
+    return {
+      success: true,
+      data: {
+        text,
         parsed: result.data
-      } 
+      }
     }
   }
 
@@ -790,7 +838,7 @@ export function apply(ctx: Context, config: any) {
 
   async function flush(session: any, matches: LinkMatch[]) {
     debugLog('INFO', `开始解析 ${matches.length} 个链接`)
-    
+
     const items: { text: string; parsed: ParsedData }[] = []
     const errors: string[] = []
 
@@ -809,7 +857,7 @@ export function apply(ctx: Context, config: any) {
       }
 
       debugLog('INFO', `正在解析第 ${i+1}/${matches.length} 个链接: ${match.url} (平台: ${match.type})`)
-      
+
       const result = await processSingleUrl(match.url, match.type)
       if (result.success) {
         items.push(result.data)
@@ -822,7 +870,7 @@ export function apply(ctx: Context, config: any) {
           .replace(/\$\{msg\}/g, result.msg)
         errors.push(item)
       }
-      
+
       if (i < matches.length - 1) {
         await delay(500)
       }
@@ -832,7 +880,7 @@ export function apply(ctx: Context, config: any) {
       await sendWithTimeout(session, `${texts.parseErrorPrefix}\n${errors.join('\n')}`)
       await delay(500)
     }
-    
+
     if (!items.length) {
       debugLog('INFO', '没有成功解析的内容')
       return
@@ -912,7 +960,7 @@ export function apply(ctx: Context, config: any) {
         }
       }
     }
-    
+
     debugLog('INFO', '所有内容处理完成')
   }
 
@@ -929,13 +977,13 @@ export function apply(ctx: Context, config: any) {
     debugLog('INFO', `检测到 ${matches.length} 个链接，开始处理`)
 
     if (config.showWaitingTip) {
-      try { 
-        await sendWithTimeout(session, texts.waitingTipText) 
+      try {
+        await sendWithTimeout(session, texts.waitingTipText)
       } catch (e) {
         debugLog('WARN', '发送等待提示失败:', e)
       }
     }
-    
+
     await flush(session, matches)
   })
 
@@ -944,19 +992,19 @@ export function apply(ctx: Context, config: any) {
       await sendWithTimeout(session, texts.invalidLinkText)
       return
     }
-    
+
     const matches = linkTypeParser(url)
     if (!matches.length) {
       await sendWithTimeout(session, texts.invalidLinkText)
       return
     }
-    
+
     if (config.showWaitingTip) {
-      try { 
-        await sendWithTimeout(session, texts.waitingTipText) 
+      try {
+        await sendWithTimeout(session, texts.waitingTipText)
       } catch {}
     }
-    
+
     await flush(session, matches)
   })
 
@@ -966,7 +1014,7 @@ export function apply(ctx: Context, config: any) {
       const files = await fs.readdir(tempDir)
       const now = Date.now()
       let deletedCount = 0
-      
+
       for (const file of files) {
         if (file.startsWith('video_') && file.endsWith('.mp4')) {
           const filePath = path.join(tempDir, file)
@@ -977,7 +1025,7 @@ export function apply(ctx: Context, config: any) {
           }
         }
       }
-      
+
       if (deletedCount > 0) {
         debugLog('INFO', `清理了 ${deletedCount} 个过期临时视频文件`)
       }

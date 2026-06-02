@@ -1,0 +1,46 @@
+name: Publish to NPM
+
+on:
+  push:
+    tags:
+      - 'v*' # 仅当推送类似 v1.2.2 的 tag 时触发，避免误发
+  workflow_dispatch: # 保留手动触发的后门，应对紧急热修复
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # 赋予 GITHUB_TOKEN 写入 id-token 的权限，用于 npm provenance (来源证明)
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x' # 你的 engines 要求 >=16，20.x 是当前 LTS 最佳选择
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        # 资深开发者通常使用 pnpm，如果你用 pnpm 请替换为：
+        # run: pnpm install --frozen-lockfile
+        run: npm ci
+
+      - name: Build TypeScript
+        # 执行 tsc，将源码降维编译为 JS 并生成 .d.ts
+        run: npm run build
+
+      # 可选：如果你配置了单元测试，务必在发布前拦截
+      # - name: Run Tests
+      #   run: npm test
+
+      - name: Publish to NPM
+        # --provenance: 在 npm 官网显示该包由 GitHub Actions 构建，增加可信度
+        # --access public: 解决 @wyatex scope 包默认 private 导致 402 支付错误的问题
+        run: npm publish --provenance --access public
+        env:
+          # 需要在 GitHub Repo Settings -> Secrets 中配置 NPM_TOKEN
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,5 +1,5 @@
 {
-  "name": "koishi-plugin-video-parser-all",
+  "name": "@wyatex/koishi-plugin-video-parser-all",
   "description": "Koishi 全平台视频解析插件，支持抖音/快手/B站/微博/小红书/剪映/YouTube/TikTok等20+平台",
   "version": "1.2.2",
   "main": "lib/index.js",
@@ -67,12 +67,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Minecraft-1314/koishi-plugin-video-parser-all.git"
+    "url": "git+https://github.com/Wyatex/koishi-plugin-video-parser-all.git"
   },
   "bugs": {
-    "url": "https://github.com/Minecraft-1314/koishi-plugin-video-parser-all/issues"
+    "url": "https://github.com/Wyatex/koishi-plugin-video-parser-all/issues"
   },
-  "homepage": "https://github.com/Minecraft-1314/koishi-plugin-video-parser-all#readme",
+  "homepage": "https://github.com/Wyatex/koishi-plugin-video-parser-all#readme",
   "engines": {
     "node": ">=16.0.0"
   }
