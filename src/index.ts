@@ -25,6 +25,7 @@ export const Config = Schema.intersect([
 
   Schema.object({
     showImageText: Schema.boolean().default(true).description('是否发送解析后的文字内容'),
+    showCover: Schema.boolean().default(true).description('是否发送视频封面图'),
     showVideoFile: Schema.boolean().default(true).description('是否发送视频文件（关闭则只发送视频链接）'),
     maxDescLength: Schema.number().min(0).step(1).default(200).description('简介内容最大长度（字符），超出自动截断'),
     videoDownloadTimeout: Schema.number().min(0).step(1).default(120000).description('视频下载超时（毫秒）'),
@@ -102,6 +103,7 @@ export const Config = Schema.intersect([
   }).description('API 选择设置'),
 
   Schema.object({
+    showUnsupportedPlatformText: Schema.boolean().default(true).description('是否发送不支持平台的提示'),
     waitingTipText: Schema.string().default('正在解析视频，请稍候...').description('解析等待提示'),
     unsupportedPlatformText: Schema.string().default('不支持该平台链接').description('不支持的平台提示'),
     invalidLinkText: Schema.string().default('无效的视频链接').description('无效链接提示（parse 指令）'),
@@ -865,10 +867,15 @@ export function apply(ctx: Context, config: any) {
           dedupCache.set(match.url, Date.now())
         }
       } else {
-        const item = texts.parseErrorItemFormat
-          .replace(/\$\{url\}/g, match.url.length > 50 ? match.url.slice(0,50)+'...' : match.url)
-          .replace(/\$\{msg\}/g, result.msg)
-        errors.push(item)
+        // 判断是否需要忽略不支持平台的报错
+        if (!config.showUnsupportedPlatformText && result.msg === texts.unsupportedPlatformText) {
+          debugLog('INFO', `跳过不支持平台的报错记录: ${match.url}`)
+        } else {
+          const item = texts.parseErrorItemFormat
+            .replace(/\$\{url\}/g, match.url.length > 50 ? match.url.slice(0,50)+'...' : match.url)
+            .replace(/\$\{msg\}/g, result.msg)
+          errors.push(item)
+        }
       }
 
       if (i < matches.length - 1) {
@@ -899,7 +906,7 @@ export function apply(ctx: Context, config: any) {
         if (text && config.showImageText) {
           forwardMessages.push(buildForwardNode(session, text, botName))
         }
-        if (p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+        if (config.showCover && p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
           forwardMessages.push(buildForwardNode(session, h.image(p.cover), botName))
         }
         if (p.type === 'image' || p.type === 'live_photo' || (p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
@@ -935,7 +942,7 @@ export function apply(ctx: Context, config: any) {
           await sendWithTimeout(session, text)
           await delay(300)
         }
-        if (p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
+        if (config.showCover && p.cover && p.type !== 'live_photo' && !(p.type === 'live' && (p.live_photo?.length || p.images?.length))) {
           await sendWithTimeout(session, h.image(p.cover)).catch(() => {})
           await delay(300)
         }
